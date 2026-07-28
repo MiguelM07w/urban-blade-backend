@@ -46,10 +46,13 @@ async function bootstrap(): Promise<void> {
   SwaggerModule.setup(`${apiPrefix}/docs`, app, document);
 
   const port = config.get<number>('port', 3000);
-  await app.listen(port);
+  // Escuchar en 0.0.0.0 (no solo localhost) es obligatorio en plataformas como
+  // Render/Railway: enrutan el tráfico a la app por su IP interna, no por
+  // localhost. Sin esto el health check falla y el deploy se marca como caído.
+  await app.listen(port, '0.0.0.0');
 
   console.log(
-    `🚀 Urban Blade API corriendo en http://localhost:${port}/${apiPrefix}`,
+    `🚀 Urban Blade API corriendo en el puerto ${port} (/${apiPrefix})`,
   );
 }
 
