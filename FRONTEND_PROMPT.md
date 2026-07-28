@@ -92,9 +92,9 @@ type DayOfWeek = "lunes" | "martes" | "miercoles" | "jueves" | "viernes" | "saba
 
 ## Endpoints principales (todos bajo `/api`)
 
-- **Auth:** `POST /auth/register`, `/auth/login`, `/auth/google`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password`, `/auth/reset-password`
-- **Usuarios:** `GET/PATCH /users/:id`, `DELETE /users/:id`, `GET /users/:id/history`, `GET /users/:id/favorites`, `POST /users/:id/favorites/:hairstyleId`, `PATCH /users/:id/fcm-token`, `GET /users` (admin, listado)
-- **Barberos:** `GET /barbers`, `GET /barbers/:id`, `GET /barbers/barber-of-the-day`, `GET /barbers/:id/portfolio`, `GET /barbers/:id/schedule`, `GET /barbers/:id/appointments?period=day|week|month`, `GET /barbers/:id/stats`
+- **Auth:** `POST /auth/register`, `/auth/login`, `/auth/google`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password`, `/auth/verify-reset-code`, `/auth/reset-password`
+- **Usuarios:** `GET/PATCH /users/:id`, `DELETE /users/:id`, `GET /users/:id/history`, `GET /users/:id/favorites`, `POST /users/:id/favorites/:hairstyleId`, `PATCH /users/:id/fcm-token`, `GET /users` (admin, listado), `GET /users/admins` (admin/barbero — para chatear con el admin)
+- **Barberos:** `GET /barbers`, `GET /barbers/:id`, `GET /barbers/barber-of-the-day`, `GET /barbers/:id/portfolio`, `GET /barbers/:id/schedule`, `GET /barbers/:id/day-availability?date=` (reloj del día), `GET /barbers/:id/appointments?period=day|week|month`, `GET /barbers/:id/stats`
 - **Citas:** `POST /appointments`, `GET /appointments/available-slots?barber=&date=&service=`, `GET /appointments/quote?service=`, `GET /appointments/wait-time`, `PATCH /appointments/:id/cancel`, `/confirm`, `/reschedule`; barbero: `PATCH /appointments/:id/status`
 - **Servicios:** `GET /services`, `GET /services/featured`, `GET /services/:id`
 - **Tickets:** `GET /tickets/client/:clientId`, `GET /tickets/:id/receipt`
@@ -155,12 +155,26 @@ Si el token es inválido, el servidor desconecta el socket. Reautenticar tras un
 { idToken: string }
 // POST /auth/refresh  (body)
 { refreshToken: string }
-// POST /auth/forgot-password (body) → { email }   → data: { resetToken: string | null }
-//   El backend envía el enlace de reseteo por EMAIL. Respuesta siempre genérica (no revela si el email existe).
-//   - Con SMTP configurado (producción): `resetToken` viene `null` (el token viaja por correo, no se expone).
-//   - Sin SMTP (desarrollo): `resetToken` viene en la respuesta como respaldo para poder probar el flujo.
-//   El usuario abre el enlace del correo (deep link con ?token=...) y completa el reseteo:
-// POST /auth/reset-password (body) → { token, newPassword }   (token = el del enlace/correo)
+// --- Recuperación de contraseña por CÓDIGO de 6 dígitos (flujo de 3 pasos) ---
+
+// PASO 1 — POST /auth/forgot-password (body) → { email }
+//   → data: { resetToken: string | null, resetCode: string | null }
+//   El backend envía por EMAIL un CÓDIGO de 6 dígitos (válido 30 min) + un enlace de respaldo.
+//   Respuesta siempre genérica (no revela si el email existe → muestra "si el email existe, te llegó un código").
+//   - Con SMTP configurado (producción): `resetCode`/`resetToken` vienen `null` (viajan por correo).
+//   - Sin SMTP (desarrollo): vienen en la respuesta como respaldo para poder probar el flujo.
+
+// PASO 2 — POST /auth/verify-reset-code (body) → { email, code: "482137" }
+//   → data: { valid: true }   (200 si el código coincide y no expiró)
+//   NO cambia la contraseña ni consume el código (sigue válido para el paso 3).
+//   401 "Código de recuperación inválido o expirado" si el código es incorrecto/vencido.
+
+// PASO 3 — POST /auth/reset-password (body) → { newPassword, ...credencial }
+//   Cambia la contraseña. Dos formas de identificar la solicitud (usa UNA):
+//   (A) RECOMENDADA — código de 6 dígitos + email:  { email, code: "482137", newPassword }
+//   (B) Compatibilidad — token del enlace/deep link: { token, newPassword }
+//   El código se CONSUME aquí (un solo uso) y expira a los 30 min.
+//   401 "Código de recuperación inválido o expirado".
 
 // Respuesta de register/login/google/refresh (data):
 {
@@ -169,6 +183,37 @@ Si el token es inválido, el servidor desconecta el socket. Reautenticar tras un
   user: { id: string; name: string; email: string; role: Role; avatar?: string };
 }
 ```
+
+#### Comportamiento esperado en el FRONTEND — recuperar contraseña (3 pantallas)
+
+El flujo es de **3 pasos**, uno por pantalla:
+
+1. **Pantalla "¿Olvidaste tu contraseña?"** — input de **email** → `POST /auth/forgot-password`.
+   - Muestra siempre un mensaje genérico ("Si el email existe, te enviamos un código")
+     — el backend no revela si el email existe. Navega al paso 2 pase lo que pase.
+   - El usuario revisa su correo y ve un **código de 6 dígitos**.
+
+2. **Pantalla "Ingresa el código"** — input de **6 dígitos** (idealmente 6 casillas OTP)
+   → `POST /auth/verify-reset-code` con `{ email, code }`.
+   - Si responde `200 { valid: true }` → **navega al paso 3** (guarda `email` y `code` en
+     el estado para reusarlos).
+   - Si responde `401` → muestra "Código inválido o expirado" y deja reintentar.
+   - Ofrece un botón **"Reenviar código"** que vuelve a llamar `forgot-password`.
+   - Verificar **no gasta** el código: el usuario puede avanzar y el código sigue vivo.
+
+3. **Pantalla "Nueva contraseña"** — inputs de **contraseña** y **confirmar contraseña**
+   → `POST /auth/reset-password` con `{ email, code, newPassword }` (el `email` y `code`
+   que guardaste en el paso 2).
+   - Si responde `200` → contraseña cambiada: navega al login y muestra éxito.
+   - Si responde `401` ("código inválido o expirado", p. ej. tardó > 30 min) → regresa al
+     paso 2 para pedir un código nuevo.
+   - `newPassword` debe tener mínimo 6 caracteres (valida en el front antes de enviar).
+
+> **Notas:** el código **expira a los 30 min** y es de **un solo uso** (se consume al
+> cambiar la contraseña, no al verificarlo). Al resetear, el backend **cierra todas las
+> sesiones** del usuario (tendrá que volver a iniciar sesión). El campo `token` de
+> `reset-password` es solo para el flujo antiguo por deep link; con el código de 6 dígitos
+> usa `email`+`code`.
 
 ### Users
 
@@ -216,18 +261,24 @@ Si el token es inválido, el servidor desconecta el socket. Reautenticar tras un
 //   donde cabe entero (p. ej. si cierra a 18:00, el último inicio será 16:00) y respeta el
 //   descanso del barbero. Si lo omites, se usan bloques de 30 min (comportamiento anterior).
 // GET /appointments/wait-time  → data: { estimatedWaitMinutes: number }
-// GET /appointments/quote?service=<id>&coupon=<CODE>  (auth) — precio con promoción + cupón aplicados.
-//   `coupon` es OPCIONAL. El cliente se toma del token (para "primera cita", promos ya usadas y cupón). → data:
+// GET /appointments/quote?service=<id>&coupon=<CODE>  (auth) — precio con TODOS los beneficios aplicados.
+//   `coupon` es OPCIONAL. El cliente se toma del token. El backend detecta y aplica SOLO (sin que mandes nada):
+//   la promoción vigente ("primera cita", nivel, etc.), el cupón que el usuario tenga RECLAMADO en Fidelización,
+//   y el SERVICIO GRATIS de fidelización si tiene uno disponible. → data:
 //   {
 //     basePrice: number;      // precio del servicio sin descuentos
-//     discount: number;       // dinero descontado TOTAL (promo + cupón)
-//     finalPrice: number;     // basePrice - discount (lo que se cobrará en el ticket)
-//     promotion: { id, title, type, discountValue, scope } | null,     // promo aplicada (automática)
-//     coupon: { id, code, discountType, discountValue, discount } | null, // cupón aplicado (si es válido)
-//     couponError: string | null   // motivo si el cupón enviado NO aplica (ej. "El cupón ha expirado")
+//     discount: number;       // dinero descontado TOTAL
+//     finalPrice: number;     // basePrice - discount (lo que se cobrará en el ticket; 0 si es servicio gratis)
+//     promotion: { id, title, type, discountValue, scope } | null,       // promo aplicada (automática)
+//     coupon: { id, code, discountType, discountValue, discount, autoApplied } | null,
+//     couponError: string | null,  // motivo si un cupón MANUAL enviado no aplica
+//     freeService: { applied: true, reason: string } | null   // servicio gratis de fidelización aplicado
 //   }
-//   Promo y cupón se ACUMULAN: el cupón se calcula sobre el precio ya con promo. Nunca negativo.
-//   Si el cupón no aplica: coupon=null, couponError con el motivo, y finalPrice mantiene solo la promo.
+//   - `coupon.autoApplied: true` = el backend lo aplicó solo porque el usuario lo canjeó en Fidelización
+//     (no lo escribiste tú). Muéstralo como "Cupón X aplicado". `false` = lo mandaste manual en `?coupon=`.
+//   - `freeService` != null: el servicio sale GRATIS (finalPrice 0). GANA sobre promo/cupón (esos van null).
+//     Muéstralo como "Servicio gratis por fidelización". Se consume al completar la cita.
+//   Promo y cupón se ACUMULAN (cupón sobre el precio ya con promo). Nunca negativo.
 
 // Appointment (respuesta):
 {
@@ -358,6 +409,23 @@ Si el token es inválido, el servidor desconecta el socket. Reautenticar tras un
 // Message (respuesta): { _id, conversation, sender, content, type, imageUrl|null, isRead, createdAt }
 ```
 
+**Descubrir con quién chatear (a quién escribirle primero):**
+
+```ts
+// El CLIENTE lista barberos con GET /barbers (público) y abre chat con cualquiera.
+// El BARBERO (o admin) descubre a los admins para escribirles:
+GET /users/admins    (admin/barbero)   → data: { _id, name, avatar }[]
+//   Lista de administradores activos (normalmente uno). Solo datos públicos.
+//   403 si lo llama un cliente.
+```
+
+> **Chat barbero → admin (arreglo):** antes el barbero no tenía forma de saber el
+> `_id` del admin, así que solo podía responder si el admin escribía primero. Con
+> `GET /users/admins` el barbero ya obtiene el admin y **inicia** la conversación
+> él mismo (mismo `POST /chat/conversations` de siempre, con `participants:
+> [barberUserId, adminId]`). En la pantalla de mensajes del barbero, muestra una
+> fila de admins tocables (simétrica a la de barberos que ve el cliente).
+
 ### Notifications / Config
 
 ```ts
@@ -400,16 +468,29 @@ Si el token es inválido, el servidor desconecta el socket. Reautenticar tras un
 
 ### Barbero (rol `barber`)
 
-- Agenda del día/semana/mes (`/barbers/:id/appointments`).
+- Agenda / métricas del día/semana/mes (`GET /barbers/:id/appointments?period=day|week|month`).
 - Cambiar estado de una cita (`confirmada` / `completada` / `no_asistio` / `cancelada`).
 - Ver estadísticas propias, gestionar portafolio y horarios.
 - Chat con clientes.
+
+> **`GET /barbers/:id/appointments?period=` — ventana de CALENDARIO (arreglo métricas):**
+> devuelve las citas del periodo de **calendario completo** que contiene hoy, con los
+> días ya pasados incluidos:
+> - `day` = todo hoy · `week` = lunes–domingo de esta semana · `month` = día 1 al fin de mes.
+>
+> Antes la ventana iba solo "desde hoy hacia adelante", por eso las **métricas de
+> ganancias** (que suman citas `completada`, casi siempre pasadas) salían vacías. Ahora
+> sí traen esas citas. Cada cita incluye `service` poblado con **`name, duration, price`**
+> (usa `service.price` de las `completada` para sumar ingresos — ya no necesitas
+> consultar `/services` aparte). Las cards de "Citas" (que usan `GET /barbers/:id/stats`,
+> histórico completo) no cambian.
 
 ### Admin (rol `admin`)
 
 - Dashboard (`/admin/dashboard`) con métricas.
 - Gestión de usuarios (bloquear/desbloquear/cambiar rol), barberos, servicios, productos, promociones, cupones, config de la barbería.
 - Reportes (con opción de exportar PDF/Excel).
+- **Registro de auditoría** (`GET /audit-logs`): historial de acciones sensibles (ver sección abajo).
 
 ## Requisitos técnicos transversales
 
@@ -831,7 +912,7 @@ turno en la fila, lista de espera, recomendación IA, promociones, chat.
 ### ADMIN
 | Evento | `type` | Título | `data` |
 |---|---|---|---|
-| **Cita reservada completada, lista para cobro** *(nuevo)* | `aviso_admin` | "Cobro pendiente (cita)" | `{ appointmentId, ticketId, clientId }` |
+| **Cita completada / walk-in de barbero, lista para cobro** *(nuevo)* | `aviso_admin` | "Cobro pendiente (cita)" | `{ appointmentId, ticketId, clientId }` |
 | **Atención de fila lista para cobro** *(nuevo)* | `aviso_admin` | "Cobro pendiente (fila)" | `{ queueEntryId, ticketId, barberId, clientId, guestName }` |
 | **Nuevo mensaje de contacto** *(nuevo)* | `aviso_admin` | "Nuevo mensaje de contacto" | `{ name, email }` |
 | Mensaje de chat **de un barbero/empleado** | `nuevo_mensaje` | "Nuevo mensaje" | `{ conversationId, senderId }` |
@@ -899,6 +980,49 @@ PATCH /barbers/:id/schedule
 - Si el cliente intenta reservar (o reprogramar) a una hora que cae fuera de toda franja o dentro del descanso, el backend responde `400 "La hora solicitada está fuera del horario del barbero o cae en su descanso"`. Muestra ese `message`.
 
 Recomendación de UI para configurar el horario (pantalla de barbero/admin): un editor de franjas por día donde se puedan **añadir varias franjas** al mismo día (botón "＋ añadir tramo"), para modelar el descanso. Al guardar, envía **todas** las franjas del día en el array de `schedule` (el `PATCH` reemplaza el horario completo).
+
+### 3. Reloj / timeline del día — `GET /barbers/:id/day-availability`
+
+Para dibujar la **foto completa de un día** (dónde está libre, ocupado o en
+descanso) — el "reloj" — usa este endpoint. Devuelve los rangos exactos, no solo
+las horas de inicio.
+
+```ts
+GET /barbers/:id/day-availability?date=YYYY-MM-DD   (público)
+//   → data:
+{
+  workingHours: [                       // franjas de trabajo del día (vacío si libra)
+    { start: "09:00", end: "13:00" },
+    { start: "15:00", end: "19:00" }
+  ],
+  busy: [                               // bloques ocupados, ORDENADOS por hora
+    { start: "10:00", end: "10:30", type: "cita" },
+    { start: "13:00", end: "15:00", type: "descanso" }
+  ]
+}
+```
+
+- `workingHours`: las franjas en las que el barbero atiende ese día. **Vacío** = no
+  trabaja ese día (líbra) → pinta el día como no disponible.
+- `busy`: los bloques ocupados con su **rango exacto** y `type`:
+  - `"cita"` — una cita ocupando ese rango (mismos estados que bloquean en
+    `available-slots`: pendiente + confirmada + completada).
+  - `"descanso"` — el hueco entre dos franjas de trabajo (almuerzo, etc.).
+- **Cómo dibujar el reloj:** pinta la barra del día desde el `start` de la primera
+  franja al `end` de la última; colorea de "libre" todo `workingHours` y encima
+  superpone los `busy` (cita/descanso) con su color. Lo que quede de `workingHours`
+  sin `busy` encima es libre.
+
+> **Qué endpoint para qué:** `day-availability` es **solo para dibujar** (rangos
+> ocupados/libres). Para saber **qué horas son reservables** según la duración del
+> servicio sigue usando `available-slots?...&service=<id>` (que ya filtra por
+> duración). Ambos usan el mismo criterio de "ocupado", así que **coinciden**: una
+> hora que `available-slots` ofrece caerá siempre en un tramo libre del reloj. Úsalo
+> igual en la reserva del cliente y en el registro de walk-in/fila del staff.
+
+> **Zona horaria:** el backend interpreta la fecha en la hora **del servidor**.
+> Manda `date` como `YYYY-MM-DD` del día que quieres ver; si notas un desfase de un
+> día, es por diferencia de zona — usa la fecha local del día seleccionado.
 
 ## Barbero: editar su propia información (perfil)
 
@@ -978,12 +1102,18 @@ En la pantalla de reservar, después de que el cliente elige el **servicio**, pi
 
 ```ts
 GET /appointments/quote?service=<serviceId>      (auth)
-//   → data: { basePrice, discount, finalPrice, promotion }
+//   → data: { basePrice, discount, finalPrice, promotion, coupon, couponError, freeService }
 ```
 
-- Si `discount > 0`, muestra el **precio tachado** (`basePrice`) junto al **precio final** (`finalPrice`) y una etiqueta con `promotion.title` (p. ej. "Bienvenida −20%").
-- Si `promotion` es `null`, muestra solo `basePrice` (no hay promo aplicable).
-- El **cliente sale del token**, no lo mandas tú; por eso las promos de `scope: "primera_cita"` se evalúan solas según el historial del usuario autenticado.
+El backend aplica **solo** (sin que mandes nada) TODO lo que le corresponda al usuario del token. Pinta según lo que llegue:
+
+- **`freeService` != null** → el servicio es **GRATIS** (`finalPrice: 0`). Muestra una etiqueta destacada "Servicio gratis por fidelización" y el precio tachado. Gana sobre todo (promo/cupón vienen `null`).
+- **`coupon` != null** → hay un cupón aplicado. Si `coupon.autoApplied === true`, el usuario lo **canjeó en Fidelización** y el backend lo aplicó solo: muéstralo como "Cupón {code} aplicado" (no lo escribió en esta pantalla). Si es `false`, es el que tecleó manualmente.
+- **`promotion` != null** → promo automática (p. ej. "primera cita −20%"). Etiqueta con `promotion.title`.
+- Si `discount > 0`, muestra el **precio tachado** (`basePrice`) junto al **final** (`finalPrice`).
+- El **cliente sale del token**, no lo mandas tú; por eso "primera cita", el cupón reclamado y el servicio gratis se evalúan solos según el usuario autenticado. **Este es el mismo patrón que ya usabas para `promotion`, extendido a `coupon` (canjeado) y `freeService`.**
+
+> **Importante (esto arregla el bug reportado):** cuando el usuario **canjea un cupón en Fidelización** (`POST /loyalty/redeem`), ya NO tienes que guardar ni reenviar el código. El backend lo recuerda y lo **auto-aplica** en el siguiente `quote` (llega en `coupon` con `autoApplied: true`). Igual el **servicio gratis por nivel/visitas** (`freeServicesEarned`): aparece solo en `quote.freeService` cuando el usuario tiene uno. Ambos se **consumen** al completar la cita.
 
 > React Query: incluye `serviceId` en el `queryKey` (`["quote", serviceId]`). Vuelve a pedir la cotización si el cliente cambia de servicio.
 
@@ -1163,6 +1293,74 @@ PATCH /admin/users/:id/unblock     (admin)
 - Bloquear/desbloquear → los endpoints de arriba.
 
 > **Autorregistro del cliente (app):** el registro normal de un cliente sigue siendo `POST /auth/register` (devuelve tokens e inicia sesión). `POST /users` es un alta alternativa que también crea solo clientes, pero sin login. Para la app usa `POST /auth/register`.
+
+## Admin: registro de auditoría (`GET /audit-logs`)
+
+> **Aclaración clave:** los *logs de consola* del servidor (lo que sale en la
+> terminal: peticiones HTTP, errores, warnings) **NO** son accesibles desde la app
+> ni deben serlo — son diagnóstico del servidor. Lo que el **admin sí ve desde el
+> frontend** es el **registro de auditoría**: una colección persistente y
+> consultable de **acciones sensibles**, pensada para trazabilidad y seguridad.
+> Ese es el endpoint que debe consumir el panel de admin.
+
+```ts
+GET /audit-logs?page=&limit=&action=&actor=   (SOLO admin)
+//   → data: { items: AuditLog[]; total; page; limit }   (paginado, más recientes primero)
+//   Filtros opcionales:
+//     action  = una de las AuditAction (ver lista abajo)
+//     actor   = userId del usuario que ejecutó la acción
+```
+
+```ts
+// AuditLog (forma de cada registro):
+{
+  _id: string;
+  action: AuditAction;              // qué se hizo (enum, ver abajo)
+  outcome: "success" | "failure";   // si tuvo éxito o falló
+  actor: string | null;             // userId que la ejecutó (null si anónimo, p. ej. login fallido)
+  actorEmail: string | null;        // email del actor EN EL MOMENTO (copia; sobrevive si el user cambia/borra)
+  actorRole: string | null;         // rol del actor en el momento
+  method: string;                   // método HTTP (POST, PATCH, DELETE...)
+  path: string;                     // ruta llamada
+  ip: string;                       // IP de origen
+  targetId: string | null;          // id del recurso afectado (el :id de la ruta), si aplica
+  statusCode: number;               // código HTTP de la respuesta
+  detail: string;                   // detalle libre (mensaje de error si falló, etc.)
+  createdAt: string;                // cuándo ocurrió
+}
+
+// AuditAction (valores):
+type AuditAction =
+  | "login_success" | "login_failed" | "password_reset"        // autenticación
+  | "user_created" | "user_role_changed" | "user_blocked"
+  | "user_unblocked" | "user_deleted"                          // gestión de usuarios
+  | "appointment_cancelled" | "appointment_status_changed"     // citas
+  | "service_updated" | "promotion_created" | "coupon_created" // catálogo/precios
+  | "trust_score_restored";                                    // fidelización
+```
+
+### Cómo mostrarlo en el frontend (pantalla admin "Auditoría / Seguridad")
+
+- **Tabla o lista** con: fecha (`createdAt`), acción (`action` → etiqueta legible,
+  p. ej. `password_reset` → "Recuperación de contraseña"), actor (`actorEmail` o
+  "Anónimo" si es `null`), resultado (`outcome` → badge verde/rojo), y detalle
+  (`detail`).
+- **Filtros:** un selector por `action` y un buscador por `actor` (userId). Añade
+  paginación con `page`/`limit` (el backend ya la devuelve).
+- **Colorear por `outcome`:** `failure` en rojo (p. ej. `login_failed`) para que
+  los intentos sospechosos resalten.
+- Muestra `ip` y `path` en el detalle expandido de cada fila (útil para investigar).
+
+> **Sobre privacidad:** el `actorEmail` aquí **sí** viene completo — es correcto,
+> porque es un registro de seguridad admin-only y el admin necesita saber quién
+> hizo qué. La ofuscación de email (`m***1@gmail.com`) aplica **solo** a los logs
+> de consola del servidor, no a este registro de auditoría.
+>
+> **Recuperación de contraseña:** cada solicitud (`POST /auth/forgot-password` que
+> resulta en reset) queda registrada como `action: "password_reset"`, con el
+> `actorEmail` de quien la pidió. Así el admin puede ver desde la app quién
+> solicitó recuperar su contraseña y cuándo — la info ya no se queda solo en la
+> terminal del backend.
 
 ## Fidelización: canjes (cupón, código de referido y servicio gratis)
 

@@ -44,10 +44,14 @@ export class AuditInterceptor implements NestInterceptor {
     const request = context.switchToHttp().getRequest<Request>();
     const response = context.switchToHttp().getResponse<Response>();
     const user = request.user as AuthenticatedUser | undefined;
+    // Si la acción la ejecuta un usuario autenticado, el email sale del token.
+    // Para endpoints PÚBLICOS auditados (p. ej. recuperación de contraseña) no
+    // hay token: se toma el email del body como respaldo, para que el admin
+    // pueda ver quién ejecutó la acción en el registro de auditoría.
     const base = {
       action,
       actor: user?.userId ?? null,
-      actorEmail: user?.email ?? null,
+      actorEmail: user?.email ?? this.emailFromBody(request),
       actorRole: user?.role ?? null,
       method: request.method,
       path: request.originalUrl || request.url,
@@ -90,5 +94,14 @@ export class AuditInterceptor implements NestInterceptor {
   private extractTargetId(request: Request): string | null {
     const params = request.params as Record<string, string> | undefined;
     return params?.id ?? params?.userId ?? null;
+  }
+
+  /**
+   * Email del body (para acciones públicas auditadas donde no hay token, como la
+   * recuperación de contraseña). Devuelve null si no viene.
+   */
+  private emailFromBody(request: Request): string | null {
+    const body = request.body as { email?: unknown } | undefined;
+    return typeof body?.email === 'string' ? body.email : null;
   }
 }

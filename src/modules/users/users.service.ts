@@ -137,6 +137,22 @@ export class UsersService {
   }
 
   /**
+   * Devuelve los administradores activos con datos mínimos y públicos
+   * (`_id, name, avatar`). Pensado para que el staff (barbero/admin) descubra a
+   * quién escribir por chat, sin exponer datos sensibles del resto de usuarios.
+   */
+  async findActiveAdmins(): Promise<
+    Array<{ _id: Types.ObjectId; name: string; avatar?: string }>
+  > {
+    return this.userModel
+      .find({ isActive: true, role: Role.ADMIN })
+      .select('_id name avatar')
+      .sort({ name: 1 })
+      .lean()
+      .exec();
+  }
+
+  /**
    * Devuelve los IDs de usuarios activos registrados desde una fecha dada.
    * Usado por promotions para segmentar "nuevos clientes".
    */
@@ -237,6 +253,34 @@ export class UsersService {
   ): Promise<void> {
     await this.userModel
       .findByIdAndUpdate(id, { hashedRefreshToken, refreshTokenExpiresAt })
+      .exec();
+  }
+
+  /**
+   * Guarda (o limpia) el código de recuperación de contraseña: el hash y su
+   * expiración. Pasar `null` en ambos limpia el código (tras usarlo).
+   */
+  async setResetPasswordCode(
+    id: string,
+    resetPasswordCodeHash: string | null,
+    resetPasswordCodeExpiresAt: Date | null,
+  ): Promise<void> {
+    await this.userModel
+      .findByIdAndUpdate(id, {
+        resetPasswordCodeHash,
+        resetPasswordCodeExpiresAt,
+      })
+      .exec();
+  }
+
+  /**
+   * Busca un usuario por email incluyendo el hash del código de recuperación
+   * (que es `select:false`). Usado por auth al validar el código.
+   */
+  async findByEmailWithResetCode(email: string): Promise<UserDocument | null> {
+    return this.userModel
+      .findOne({ email: email.toLowerCase() })
+      .select('+resetPasswordCodeHash')
       .exec();
   }
 

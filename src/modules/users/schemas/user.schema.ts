@@ -62,6 +62,15 @@ export class User {
   // hashes de tokens ya expirados. null si no hay sesión activa.
   @Prop({ type: Date, default: null })
   refreshTokenExpiresAt?: Date | null;
+
+  // Hash (bcrypt) del código de recuperación de contraseña vigente. No se guarda
+  // en texto plano. null si no hay ninguno activo. select:false para no exponerlo.
+  @Prop({ type: String, required: false, select: false, default: null })
+  resetPasswordCodeHash?: string | null;
+
+  // Expiración del código de recuperación. null si no hay ninguno activo.
+  @Prop({ type: Date, default: null })
+  resetPasswordCodeExpiresAt?: Date | null;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

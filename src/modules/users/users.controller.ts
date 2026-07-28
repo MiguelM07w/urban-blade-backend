@@ -60,6 +60,18 @@ export class UsersController {
     return this.usersService.findAll(pagination);
   }
 
+  // IMPORTANTE: debe ir ANTES de `@Get(':id')`, o NestJS tomaría "admins" como
+  // el parámetro `:id`.
+  @Get('admins')
+  @Roles(Role.ADMIN, Role.BARBER)
+  @ApiOperation({
+    summary:
+      'Listar administradores activos (para que el staff les escriba por chat)',
+  })
+  findAdmins() {
+    return this.usersService.findActiveAdmins();
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Obtener usuario por ID' })
   findOne(@Param('id') id: string) {

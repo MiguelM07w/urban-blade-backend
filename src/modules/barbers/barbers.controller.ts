@@ -28,6 +28,7 @@ import { AppointmentsService } from '../appointments/appointments.service';
 import { BarbersService } from './barbers.service';
 import { AddPortfolioDto } from './dto/add-portfolio.dto';
 import { BarberOfTheDayDto } from './dto/barber-of-the-day.dto';
+import { DayAvailabilityQuery } from './dto/day-availability.query';
 import { CreateBarberDto } from './dto/create-barber.dto';
 import { UpdateBarberDto } from './dto/update-barber.dto';
 import { UpdateScheduleDto } from './dto/update-schedule.dto';
@@ -145,6 +146,21 @@ export class BarbersController {
   @ApiOperation({ summary: 'Ver horarios del barbero' })
   getSchedule(@Param('id') id: string) {
     return this.barbersService.getSchedule(id);
+  }
+
+  @Get(':id/day-availability')
+  @Public()
+  @ApiQuery({ name: 'date', example: '2026-07-10', required: true })
+  @ApiOperation({
+    summary:
+      'Disponibilidad del barbero en un día (para dibujar el reloj/timeline): ' +
+      'franjas de trabajo + bloques ocupados (citas y descansos)',
+  })
+  getDayAvailability(
+    @Param('id') id: string,
+    @Query() query: DayAvailabilityQuery,
+  ) {
+    return this.appointmentsService.getDayAvailability(id, query.date);
   }
 
   @Patch(':id/schedule')

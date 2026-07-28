@@ -10,6 +10,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { extractId } from '../../common/utils';
+import { Role } from '../../common/enums';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { BarbersService } from '../barbers/barbers.service';
 import { BarberDocument } from '../barbers/schemas/barber.schema';
@@ -37,8 +38,11 @@ import { AppointmentStatus, CancelledBy } from './enums/appointment.enums';
 import { Appointment, AppointmentDocument } from './schemas/appointment.schema';
 import {
   addMinutesToTime,
+  calendarRange,
   combineDateAndTime,
+  dayOfWeekUTC,
   dayRange,
+  isTodayServer,
   minutesToTime,
   timeToMinutes,
 } from './utils/time.util';
@@ -58,15 +62,28 @@ export interface QuoteCoupon {
   discountType: string;
   discountValue: number;
   discount: number; // dinero descontado por el cupón
+  autoApplied: boolean; // true si lo aplicó el backend solo (cupón reclamado)
+}
+
+/**
+ * Servicio gratis aplicado a la cotización (beneficio de fidelización: el usuario
+ * tiene servicios gratis acumulados por nivel/visitas). Cuando aplica, el precio
+ * final es 0 y se ignora promoción/cupón.
+ */
+export interface QuoteFreeService {
+  applied: true;
+  reason: string; // motivo legible (p. ej. "servicio gratis por fidelización")
 }
 
 /**
  * Cotización completa de una cita: promoción + cupón (ambos acumulables) sobre
- * el precio del servicio. Extiende el resultado de promociones.
+ * el precio del servicio, o un servicio gratis que los reemplaza. Extiende el
+ * resultado de promociones.
  */
 export interface AppointmentQuote extends PromotionQuote {
   coupon: QuoteCoupon | null;
   couponError: string | null;
+  freeService: QuoteFreeService | null;
 }
 
 /** Mapea el getDay() de JS (0=domingo) al enum DayOfWeek. */
@@ -132,20 +149,53 @@ export class AppointmentsService {
       clientId,
     });
 
-    // 2) Cupón (opcional). Se acumula: se calcula sobre el precio YA con promo.
+    // 0) SERVICIO GRATIS por fidelización: si el usuario tiene uno disponible,
+    //    gana sobre todo (precio 0) y se ignora promoción/cupón. Se detecta solo
+    //    en el servidor (mismo patrón que "primera cita", sin que el front mande nada).
+    if (clientId && (await this.hasFreeServiceAvailable(clientId))) {
+      return {
+        basePrice: service.price,
+        discount: service.price,
+        finalPrice: 0,
+        promotion: null,
+        coupon: null,
+        couponError: null,
+        freeService: {
+          applied: true,
+          reason: 'Servicio gratis por fidelización',
+        },
+      };
+    }
+
+    // 2) Cupón. Se acumula con la promo (se calcula sobre el precio YA con promo).
+    //    Si el front manda un código manual, se usa ese; si no, se auto-detecta un
+    //    cupón que el usuario tenga RECLAMADO y sin usar (canjeado en Fidelización).
     let coupon: QuoteCoupon | null = null;
     let couponError: string | null = null;
     let couponDiscount = 0;
 
     const trimmedCode = couponCode?.trim();
-    if (trimmedCode && clientId) {
+    let codeToApply = trimmedCode;
+    let autoApplied = false;
+    if (!codeToApply && clientId) {
+      const claimed =
+        await this.loyaltyService.findClaimedUnusedCoupon(clientId);
+      if (claimed) {
+        codeToApply = claimed.code;
+        autoApplied = true;
+      }
+    }
+
+    if (codeToApply && clientId) {
       const result = await this.loyaltyService.quoteCoupon(
         clientId,
-        trimmedCode,
+        codeToApply,
         promoQuote.finalPrice,
       );
       if (result.error || !result.coupon) {
-        couponError = result.error ?? 'Cupón no válido';
+        // Un cupón manual inválido se reporta; uno auto-detectado inválido se
+        // ignora en silencio (no molesta al usuario con un error que no pidió).
+        couponError = autoApplied ? null : (result.error ?? 'Cupón no válido');
       } else {
         couponDiscount = result.discount;
         coupon = {
@@ -154,6 +204,7 @@ export class AppointmentsService {
           discountType: result.coupon.discountType,
           discountValue: result.coupon.discountValue,
           discount: couponDiscount,
+          autoApplied,
         };
       }
     } else if (trimmedCode && !clientId) {
@@ -174,7 +225,18 @@ export class AppointmentsService {
       promotion: promoQuote.promotion,
       coupon,
       couponError,
+      freeService: null,
     };
+  }
+
+  /** Indica si el usuario tiene al menos un servicio gratis de fidelización. */
+  private async hasFreeServiceAvailable(clientId: string): Promise<boolean> {
+    try {
+      const loyalty = await this.loyaltyService.getOrCreate(clientId);
+      return loyalty.freeServicesEarned > 0;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -217,13 +279,16 @@ export class AppointmentsService {
     const service = await this.servicesService.findById(dto.service);
     const barber = await this.barbersService.findById(dto.barber);
 
+    // No se puede reservar en el pasado (p. ej. hoy a una hora que ya pasó).
+    this.assertNotInPast(dto.date, dto.startTime);
+
     // La duración del servicio determina la hora de fin.
     const endTime = addMinutesToTime(dto.startTime, service.duration);
 
     // El barbero debe trabajar ese día y el rango [inicio, fin] debe caber
     // completo dentro de alguna de sus franjas disponibles (soporta varias
     // franjas por día, p. ej. mañana y tarde con descanso en medio).
-    const dayEnum = JS_DAY_TO_ENUM[new Date(dto.date).getDay()];
+    const dayEnum = JS_DAY_TO_ENUM[dayOfWeekUTC(dto.date)];
     if (
       !this.fitsInSchedule(barber.schedule, dayEnum, dto.startTime, endTime)
     ) {
@@ -299,7 +364,10 @@ export class AppointmentsService {
    * - Invitado sin cuenta (`guestName`): se registra contra el usuario invitado
    *   genérico; solo genera ticket + pago (sin fidelización ni notificación).
    */
-  async walkIn(dto: WalkInDto): Promise<AppointmentDocument> {
+  async walkIn(
+    dto: WalkInDto,
+    registrarRole: Role,
+  ): Promise<AppointmentDocument> {
     // Crea la cita completada + su ticket (reutilizable, sin cobrar todavía).
     const { appointment, ticketId } = await this.completeDirectAttention({
       barberId: dto.barber,
@@ -311,10 +379,18 @@ export class AppointmentsService {
       notes: dto.notes,
     });
 
-    // Walk-in: se cobra en el acto (efectivo por defecto, o el método indicado).
-    if (ticketId) {
+    if (!ticketId) {
+      return appointment;
+    }
+
+    // El ADMIN/recepción cobra en el acto (efectivo por defecto, o el método
+    // indicado). El BARBERO solo atiende: el ticket queda PENDIENTE y el admin
+    // lo cobra después (mismo criterio que la fila virtual y las citas).
+    if (registrarRole === Role.ADMIN) {
       const method = dto.paymentMethod ?? PaymentMethod.EFECTIVO;
       await this.paymentsService.create({ ticket: ticketId, method });
+    } else {
+      await this.notifyAdminsPendingCharge(appointment);
     }
 
     return appointment;
@@ -355,7 +431,7 @@ export class AppointmentsService {
 
     // La atención debe caber en el horario del barbero y no solapar otra cita:
     // así el slot queda ocupado y nadie más podrá agendar esa hora.
-    const dayEnum = JS_DAY_TO_ENUM[new Date(input.date).getDay()];
+    const dayEnum = JS_DAY_TO_ENUM[dayOfWeekUTC(input.date)];
     if (
       !this.fitsInSchedule(barber.schedule, dayEnum, input.startTime, endTime)
     ) {
@@ -543,10 +619,11 @@ export class AppointmentsService {
   }
 
   /**
-   * Avisa a los administradores que una cita completada dejó un ticket PENDIENTE
-   * de cobro (cola de cobro del admin). Incluye el ticketId para enrutar. Best-
-   * effort: un fallo no debe romper el completar la cita. Solo aplica a citas
-   * reservadas (el walk-in cobra en el acto y no llama a esto).
+   * Avisa a los administradores que una atención dejó un ticket PENDIENTE de
+   * cobro (cola de cobro del admin). Incluye el ticketId para enrutar. Best-
+   * effort: un fallo no debe romper la operación. Lo usan la cita reservada al
+   * completarse y el walk-in registrado por un barbero (que no cobra); el
+   * walk-in del admin cobra en el acto y no llama a esto.
    */
   private async notifyAdminsPendingCharge(
     appointment: AppointmentDocument,
@@ -641,6 +718,18 @@ export class AppointmentsService {
     //     cliente como usuario del cupón para que no lo reutilice.
     if (quote.coupon) {
       await this.loyaltyService.markCouponUsed(quote.coupon.id, clientId);
+    }
+
+    // 1d) Consumir el SERVICIO GRATIS si se aplicó (decrementa el contador de
+    //     fidelización de forma atómica). Best-effort: no debe romper el completar.
+    if (quote.freeService) {
+      try {
+        await this.loyaltyService.redeemFreeService(clientId);
+      } catch (error) {
+        this.logger.warn(
+          `No se pudo consumir el servicio gratis de ${clientId}: ${(error as Error).message}`,
+        );
+      }
     }
 
     // 2) Sumar +5 al trust score por cita completada con éxito.
@@ -885,6 +974,9 @@ export class AppointmentsService {
       throw new BadRequestException('La cita ya está finalizada');
     }
 
+    // No se puede reprogramar a una fecha u hora que ya pasó.
+    this.assertNotInPast(dto.date, dto.startTime);
+
     const service = await this.servicesService.findById(
       extractId(appointment.service),
     );
@@ -893,7 +985,7 @@ export class AppointmentsService {
     // El nuevo horario debe caber en alguna franja disponible del barbero.
     const barberId = extractId(appointment.barber);
     const barber = await this.barbersService.findById(barberId);
-    const dayEnum = JS_DAY_TO_ENUM[new Date(dto.date).getDay()];
+    const dayEnum = JS_DAY_TO_ENUM[dayOfWeekUTC(dto.date)];
     if (
       !this.fitsInSchedule(barber.schedule, dayEnum, dto.startTime, endTime)
     ) {
@@ -986,7 +1078,7 @@ export class AppointmentsService {
     stepMinutes = 30,
   ): Promise<string[]> {
     const barber = await this.barbersService.findById(barberId);
-    const dayEnum = JS_DAY_TO_ENUM[new Date(date).getDay()];
+    const dayEnum = JS_DAY_TO_ENUM[dayOfWeekUTC(date)];
     const daySlots = barber.schedule.filter(
       (s) => s.dayOfWeek === dayEnum && s.isAvailable,
     );
@@ -1024,13 +1116,24 @@ export class AppointmentsService {
       end: timeToMinutes(a.endTime),
     }));
 
+    // Si la fecha es HOY, no se ofrecen horas de inicio que ya pasaron (según la
+    // hora del servidor). Para otros días no hay mínimo (-1 = sin restricción).
+    const now = new Date();
+    const minStartMinutes = isTodayServer(date)
+      ? now.getHours() * 60 + now.getMinutes()
+      : -1;
+
     // Genera inicios candidatos por cada franja; un inicio es válido si el
-    // bloque completo cabe dentro de la franja y no solapa ninguna cita.
+    // bloque completo cabe dentro de la franja, no solapa ninguna cita y (si es
+    // hoy) su hora no ha pasado ya.
     const startsSet = new Set<number>();
     for (const slot of daySlots) {
       const slotStart = timeToMinutes(slot.startTime);
       const slotEnd = timeToMinutes(slot.endTime);
       for (let m = slotStart; m + blockMinutes <= slotEnd; m += stepMinutes) {
+        if (m < minStartMinutes) {
+          continue; // hora ya pasada de hoy
+        }
         const overlaps = takenRanges.some(
           (r) => m < r.end && m + blockMinutes > r.start,
         );
@@ -1043,6 +1146,103 @@ export class AppointmentsService {
     return Array.from(startsSet)
       .sort((a, b) => a - b)
       .map((m) => minutesToTime(m));
+  }
+
+  /**
+   * Devuelve la disponibilidad del barbero para un día concreto, pensada para
+   * dibujar un "reloj"/timeline: las franjas de trabajo y los bloques ocupados
+   * (citas y descansos). NO reemplaza a `getAvailableSlots` (que sigue filtrando
+   * las horas reservables según la duración del servicio); este método es solo
+   * para pintar la forma del día con precisión.
+   *
+   * - `workingHours`: franjas disponibles del barbero ese día (vacío si libra).
+   * - `busy`: bloques ocupados, ordenados: citas (`type: "cita"`, mismo criterio
+   *   de estados que `getAvailableSlots`) y descansos (`type: "descanso"`, los
+   *   huecos entre franjas de trabajo del mismo día).
+   */
+  async getDayAvailability(
+    barberId: string,
+    date: Date,
+  ): Promise<{
+    workingHours: Array<{ start: string; end: string }>;
+    busy: Array<{ start: string; end: string; type: 'cita' | 'descanso' }>;
+  }> {
+    const barber = await this.barbersService.findById(barberId);
+    const dayEnum = JS_DAY_TO_ENUM[dayOfWeekUTC(date)];
+
+    // Franjas de trabajo del día, ordenadas por hora de inicio.
+    const daySlots = barber.schedule
+      .filter((s) => s.dayOfWeek === dayEnum && s.isAvailable)
+      .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+    if (daySlots.length === 0) {
+      return { workingHours: [], busy: [] };
+    }
+
+    const workingHours = daySlots.map((s) => ({
+      start: s.startTime,
+      end: s.endTime,
+    }));
+
+    // Descansos = huecos entre una franja y la siguiente (ej. 13:00→15:00).
+    const busy: Array<{
+      start: string;
+      end: string;
+      type: 'cita' | 'descanso';
+    }> = [];
+    for (let i = 0; i < daySlots.length - 1; i++) {
+      const gapStart = timeToMinutes(daySlots[i].endTime);
+      const gapEnd = timeToMinutes(daySlots[i + 1].startTime);
+      if (gapEnd > gapStart) {
+        busy.push({
+          start: minutesToTime(gapStart),
+          end: minutesToTime(gapEnd),
+          type: 'descanso',
+        });
+      }
+    }
+
+    // Citas ocupadas: mismo criterio de estados que getAvailableSlots.
+    const { start, end } = dayRange(date);
+    const taken = await this.appointmentModel
+      .find({
+        barber: new Types.ObjectId(barberId),
+        date: { $gte: start, $lt: end },
+        status: {
+          $in: [
+            AppointmentStatus.PENDIENTE,
+            AppointmentStatus.CONFIRMADA,
+            AppointmentStatus.COMPLETADA,
+          ],
+        },
+      })
+      .exec();
+
+    for (const appt of taken) {
+      busy.push({
+        start: appt.startTime,
+        end: appt.endTime,
+        type: 'cita',
+      });
+    }
+
+    busy.sort((a, b) => timeToMinutes(a.start) - timeToMinutes(b.start));
+    return { workingHours, busy };
+  }
+
+  /**
+   * Rechaza reservar en el pasado: si la fecha+hora de inicio es anterior al
+   * momento actual del servidor, lanza BadRequestException. Se compara contra
+   * `new Date()` (hora del servidor) — no depende del reloj del cliente. No se
+   * aplica al walk-in, que registra atenciones ya ocurridas.
+   */
+  private assertNotInPast(date: Date, startTime: string): void {
+    const when = combineDateAndTime(date, startTime);
+    if (when.getTime() < Date.now()) {
+      throw new BadRequestException(
+        'No se puede reservar en una fecha u hora que ya pasó',
+      );
+    }
   }
 
   /**
@@ -1127,24 +1327,19 @@ export class AppointmentsService {
     period: 'day' | 'week' | 'month',
   ): Promise<AppointmentDocument[]> {
     this.assertValidId(barberId, 'barberId');
-    const now = new Date();
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    if (period === 'day') {
-      end.setDate(end.getDate() + 1);
-    } else if (period === 'week') {
-      end.setDate(end.getDate() + 7);
-    } else {
-      end.setMonth(end.getMonth() + 1);
-    }
+    // Ventana de CALENDARIO completa (incluye los días ya pasados de esta
+    // semana/mes), no "desde hoy hacia adelante". Necesario para las métricas de
+    // ingresos del barbero, que suman citas COMPLETADAS (casi siempre pasadas).
+    // `day` sigue siendo todo el día de hoy (agenda). `price` se incluye en el
+    // populate para que el front calcule ingresos sin llamar aparte a /services.
+    const { start, end } = calendarRange(period);
 
     return this.appointmentModel
       .find({
         barber: new Types.ObjectId(barberId),
         date: { $gte: start, $lt: end },
       })
-      .populate('service', 'name duration')
+      .populate('service', 'name duration price')
       .populate('client', 'name avatar')
       .sort({ date: 1, startTime: 1 })
       .exec();

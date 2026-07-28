@@ -16,6 +16,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { Role } from '../../common/enums';
 import { TrustScoreGuard } from '../../common/guards/trust-score.guard';
+import { AuthenticatedUser } from '../../common/interfaces/jwt-payload.interface';
 import { Audit } from '../audit-log/decorators/audit.decorator';
 import { AuditAction } from '../audit-log/enums/audit-action.enum';
 import { AppointmentsService } from './appointments.service';
@@ -51,10 +52,11 @@ export class AppointmentsController {
   @ResponseMessage('Atención registrada')
   @ApiOperation({
     summary:
-      'Registrar atención directa (walk-in): crea cita completada + ticket + pago (staff)',
+      'Registrar atención directa (walk-in): crea cita completada + ticket. ' +
+      'El admin cobra en el acto; el barbero deja el ticket pendiente de cobro.',
   })
-  walkIn(@Body() dto: WalkInDto) {
-    return this.appointmentsService.walkIn(dto);
+  walkIn(@CurrentUser() user: AuthenticatedUser, @Body() dto: WalkInDto) {
+    return this.appointmentsService.walkIn(dto, user.role);
   }
 
   @Get()

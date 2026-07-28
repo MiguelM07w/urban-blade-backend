@@ -19,6 +19,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { VerifyResetCodeDto } from './dto/verify-reset-code.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -83,11 +84,25 @@ export class AuthController {
 
   @Post('forgot-password')
   @Public()
+  @Audit(AuditAction.PASSWORD_RESET)
   @HttpCode(HttpStatus.OK)
-  @ResponseMessage('Si el email existe, se envió un enlace de recuperación')
-  @ApiOperation({ summary: 'Solicitar recuperación de contraseña' })
+  @ResponseMessage('Si el email existe, se envió un código de recuperación')
+  @ApiOperation({
+    summary: 'Solicitar recuperación de contraseña (envía código)',
+  })
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto);
+  }
+
+  @Post('verify-reset-code')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ResponseMessage('Código verificado')
+  @ApiOperation({
+    summary: 'Verificar el código de recuperación (sin cambiar la contraseña)',
+  })
+  verifyResetCode(@Body() dto: VerifyResetCodeDto) {
+    return this.authService.verifyResetCode(dto);
   }
 
   @Post('reset-password')
@@ -95,7 +110,7 @@ export class AuthController {
   @Audit(AuditAction.PASSWORD_RESET)
   @HttpCode(HttpStatus.OK)
   @ResponseMessage('Contraseña actualizada')
-  @ApiOperation({ summary: 'Resetear contraseña con token' })
+  @ApiOperation({ summary: 'Resetear contraseña con código+email o token' })
   async resetPassword(@Body() dto: ResetPasswordDto) {
     await this.authService.resetPassword(dto);
     return null;

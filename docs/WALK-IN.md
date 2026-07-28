@@ -15,10 +15,19 @@ cuya hora debe bloquearse para que nadie más agende encima.
 
 1. Una **cita ya `completada`** (la atención ya ocurrió) en la hora indicada.
 2. El **ticket** con el servicio, barbero, fecha y monto.
-3. El **pago** (efectivo por defecto).
+3. El **pago** — **solo si lo registra un ADMIN** (ver abajo).
 4. Cuenta en las **estadísticas del barbero** (es una cita completada real).
 5. **Ocupa el slot** — al existir esa cita en esa hora, nadie más podrá agendar
    ni registrar otra atención que se solape (mecanismo `assertNoOverlap`).
+
+> **Quién cobra (separación atención / cobro):** el cobro depende del rol de quien
+> registra el walk-in:
+> - **ADMIN/recepción** → cobra en el acto (efectivo o el `paymentMethod` indicado);
+>   el ticket queda `pagado`.
+> - **BARBERO** → solo atiende: el ticket queda **`pendiente`** y se avisa a los
+>   admins (cola de cobro `GET /tickets?paymentStatus=pendiente`). El
+>   `paymentMethod` que envíe un barbero se ignora (no cobra). Es el mismo criterio
+>   que la fila virtual y las citas reservadas: el barbero atiende, el admin cobra.
 
 ## Endpoint
 

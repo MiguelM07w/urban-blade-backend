@@ -237,7 +237,10 @@ export class LoyaltyService {
     }
     const userObjectId = new Types.ObjectId(userId);
     if (coupon.usedBy.some((u) => u.equals(userObjectId))) {
-      throw new BadRequestException('Ya has canjeado este cupón');
+      throw new BadRequestException('Ya usaste este cupón');
+    }
+    if (coupon.claimedBy.some((u) => u.equals(userObjectId))) {
+      throw new BadRequestException('Ya tienes este cupón disponible');
     }
 
     // Verifica visitas mínimas requeridas.
@@ -250,9 +253,11 @@ export class LoyaltyService {
       }
     }
 
-    coupon.usedBy.push(userObjectId);
+    // Reclamar (no consumir): el cupón queda DISPONIBLE para el usuario. Se marca
+    // como usado recién cuando se aplica a una cita completada (markCouponUsed).
+    coupon.claimedBy.push(userObjectId);
     await coupon.save();
-    this.logger.log(`Cupón ${coupon.code} canjeado por ${userId}`);
+    this.logger.log(`Cupón ${coupon.code} reclamado por ${userId}`);
     return coupon;
   }
 
@@ -292,7 +297,7 @@ export class LoyaltyService {
     }
     const userObjectId = new Types.ObjectId(userId);
     if (coupon.usedBy.some((u) => u.equals(userObjectId))) {
-      return { ...none, error: 'Ya has canjeado este cupón' };
+      return { ...none, error: 'Ya usaste este cupón' };
     }
     if (coupon.minVisitsRequired > 0) {
       const loyalty = await this.getOrCreate(userId);
@@ -306,6 +311,30 @@ export class LoyaltyService {
 
     const discount = this.couponDiscount(coupon, price);
     return { coupon, discount, error: null };
+  }
+
+  /**
+   * Devuelve un cupón que el usuario tiene RECLAMADO y sin usar (canjeado en
+   * Fidelización, aún no aplicado a una cita), vigente y con usos disponibles.
+   * Se usa para auto-aplicarlo al cotizar una cita sin que el front lo mande. Si
+   * hay varios, devuelve el más reciente. `null` si no tiene ninguno.
+   */
+  async findClaimedUnusedCoupon(
+    userId: string,
+  ): Promise<CouponDocument | null> {
+    if (!Types.ObjectId.isValid(userId)) {
+      return null;
+    }
+    const userObjectId = new Types.ObjectId(userId);
+    return this.couponModel
+      .findOne({
+        isActive: true,
+        claimedBy: userObjectId,
+        usedBy: { $ne: userObjectId },
+        expiresAt: { $gt: new Date() },
+      })
+      .sort({ createdAt: -1 })
+      .exec();
   }
 
   /**
@@ -334,10 +363,15 @@ export class LoyaltyService {
    * reservar.
    */
   async markCouponUsed(couponId: string, userId: string): Promise<void> {
+    const userObjectId = new Types.ObjectId(userId);
+    // Consume el cupón: lo marca usado y lo saca de "reclamados" (si estaba).
     await this.couponModel
       .updateOne(
         { _id: new Types.ObjectId(couponId) },
-        { $addToSet: { usedBy: new Types.ObjectId(userId) } },
+        {
+          $addToSet: { usedBy: userObjectId },
+          $pull: { claimedBy: userObjectId },
+        },
       )
       .exec();
   }

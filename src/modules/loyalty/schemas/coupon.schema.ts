@@ -28,7 +28,13 @@ export class Coupon {
   @Prop({ type: Date, required: true })
   expiresAt!: Date;
 
-  // Usuarios que ya han canjeado este cupón.
+  // Usuarios que RECLAMARON el cupón (lo canjearon en Fidelización): lo tienen
+  // disponible pero aún no lo han aplicado a una cita.
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] })
+  claimedBy!: Types.ObjectId[];
+
+  // Usuarios que ya USARON el cupón (se aplicó a una cita completada). Cuenta
+  // para el límite de usos (maxUses).
   @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] })
   usedBy!: Types.ObjectId[];
 

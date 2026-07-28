@@ -15,6 +15,18 @@ import { PaymentMethod, PaymentStatus } from './enums/payment.enums';
 import { Payment, PaymentDocument } from './schemas/payment.schema';
 import { StripeService } from './stripe.service';
 
+/**
+ * Monto mínimo que Stripe acepta por moneda (en la unidad principal). Stripe
+ * rechaza los cobros por debajo de este valor; se validan antes de crear el
+ * PaymentIntent para devolver un error claro. Fuente: límites de cargos de Stripe.
+ */
+const STRIPE_MIN_AMOUNT: Record<string, number> = {
+  usd: 0.5,
+  mxn: 10,
+  eur: 0.5,
+  crc: 300,
+};
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -106,6 +118,18 @@ export class PaymentsService {
     }
 
     const currency = this.configService.get<string>('stripe.currency', 'usd');
+
+    // Stripe exige un monto mínimo por moneda; por debajo rechaza el cobro. Se
+    // valida aquí para devolver un 400 claro (en vez de propagar el error de
+    // Stripe como 500) e invitar a pagar en efectivo.
+    const minimum = STRIPE_MIN_AMOUNT[currency.toLowerCase()] ?? 0;
+    if (ticket.price < minimum) {
+      throw new BadRequestException(
+        `El pago con tarjeta requiere un monto mínimo de ${minimum} ${currency.toUpperCase()}. ` +
+          'Para importes menores, utiliza el pago en efectivo.',
+      );
+    }
+
     const intent = await this.stripeService.createPaymentIntent(
       ticket.price,
       currency,
