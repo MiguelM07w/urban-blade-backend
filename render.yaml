@@ -8,8 +8,10 @@ services:
     region: oregon # cámbialo a la región más cercana si lo prefieres
     plan: free # súbelo a starter/standard cuando salgas de pruebas
     branch: main
-    # Corepack habilita pnpm; luego instala (sin dev-deps en runtime) y compila.
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    # Render ya trae pnpm disponible (detecta el pnpm-lock.yaml); NO uses
+    # `corepack enable` aquí: intenta reescribir /usr/bin/pnpm (solo lectura) y
+    # falla con EROFS. Solo instala y compila.
+    buildCommand: pnpm install --frozen-lockfile && pnpm build
     startCommand: pnpm start:prod
     healthCheckPath: /api/health
     envVars:
