@@ -1,11 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  App,
-  cert,
-  getApps,
-  initializeApp,
-} from 'firebase-admin/app';
+import { App, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 
 /**
@@ -23,9 +18,7 @@ export class FirebaseService implements OnModuleInit {
 
   onModuleInit(): void {
     const projectId = this.configService.get<string>('firebase.projectId');
-    const clientEmail = this.configService.get<string>(
-      'firebase.clientEmail',
-    );
+    const clientEmail = this.configService.get<string>('firebase.clientEmail');
     const privateKey = this.configService.get<string>('firebase.privateKey');
 
     if (!projectId || !clientEmail || !privateKey) {
@@ -35,14 +28,26 @@ export class FirebaseService implements OnModuleInit {
       return;
     }
 
-    // Reutiliza la app por defecto si ya existe (p. ej. en tests).
-    const existing = getApps();
-    this.app = existing.length
-      ? existing[0]
-      : initializeApp({
-          credential: cert({ projectId, clientEmail, privateKey }),
-        });
-    this.logger.log('Firebase Admin inicializado');
+    // Inicialización tolerante a fallos: si las credenciales son inválidas (p. ej.
+    // una private key mal formateada en las variables de entorno), se registra el
+    // error y el servicio queda deshabilitado, pero la app NO se cae. Los push se
+    // registran en log hasta corregir la credencial.
+    try {
+      // Reutiliza la app por defecto si ya existe (p. ej. en tests).
+      const existing = getApps();
+      this.app = existing.length
+        ? existing[0]
+        : initializeApp({
+            credential: cert({ projectId, clientEmail, privateKey }),
+          });
+      this.logger.log('Firebase Admin inicializado');
+    } catch (error) {
+      this.app = null;
+      this.logger.error(
+        `Firebase no se pudo inicializar (credencial inválida); los push se ` +
+          `registrarán en log. Detalle: ${(error as Error).message}`,
+      );
+    }
   }
 
   isEnabled(): boolean {
@@ -72,9 +77,7 @@ export class FirebaseService implements OnModuleInit {
       });
       return true;
     } catch (error) {
-      this.logger.warn(
-        `Error enviando push FCM: ${(error as Error).message}`,
-      );
+      this.logger.warn(`Error enviando push FCM: ${(error as Error).message}`);
       return false;
     }
   }
