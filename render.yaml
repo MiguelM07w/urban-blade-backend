@@ -63,6 +63,8 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: STRIPE_WEBHOOK_SECRET_ORDERS
+        sync: false
       - key: STRIPE_CURRENCY
         value: mxn
       - key: THROTTLE_TTL

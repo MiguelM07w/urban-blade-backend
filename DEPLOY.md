@@ -84,8 +84,17 @@ webhook directamente en Stripe apuntando a tu URL pública de Render:
 3. Stripe te da un `whsec_...` de **producción** → ponlo en `STRIPE_WEBHOOK_SECRET`
    en Render.
 
-Repite para el webhook de compras de productos si lo usas:
-`.../api/orders/stripe/webhook`.
+### Webhook de compras de productos (orders)
+
+Las compras de productos tienen un **endpoint aparte** en Stripe:
+`https://<tu-servicio>.onrender.com/api/orders/stripe/webhook` (mismo evento
+`payment_intent.succeeded`).
+
+⚠️ **Stripe genera un signing secret DISTINTO por cada endpoint.** El del webhook
+de productos NO es el mismo que el de servicios. Ponlo en una variable aparte:
+`STRIPE_WEBHOOK_SECRET_ORDERS` (con el `whsec_...` de ese endpoint). El backend
+verifica la firma probando ambos secretos, así cada webhook valida con el suyo. Si
+solo usas pagos de servicios, no necesitas esta variable.
 
 ## 7. Verificar el despliegue
 

@@ -68,10 +68,34 @@ export class StripeService implements OnModuleInit {
    * es válida (protege contra webhooks falsos).
    */
   constructEvent(payload: Buffer, signature: string): Stripe.Event {
-    const secret = this.configService.get<string>('stripe.webhookSecret');
-    if (!secret) {
+    // Puede haber varios endpoints de webhook en Stripe (servicios y productos),
+    // cada uno con su propio signing secret. Se intenta verificar la firma con
+    // cada secreto configurado; basta con que uno valide. Así un mismo backend
+    // atiende ambos webhooks sin mezclar secretos.
+    const secrets = [
+      this.configService.get<string>('stripe.webhookSecret'),
+      this.configService.get<string>('stripe.webhookSecretOrders'),
+    ].filter((s): s is string => !!s);
+
+    if (secrets.length === 0) {
       throw new Error('STRIPE_WEBHOOK_SECRET no está configurado');
     }
-    return this.client().webhooks.constructEvent(payload, signature, secret);
+
+    let lastError: unknown;
+    for (const secret of secrets) {
+      try {
+        return this.client().webhooks.constructEvent(
+          payload,
+          signature,
+          secret,
+        );
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    // Ninguno de los secretos validó la firma.
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('Firma de webhook no válida');
   }
 }

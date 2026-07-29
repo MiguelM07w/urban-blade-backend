@@ -34,6 +34,7 @@ export interface AppConfig {
   stripe: {
     secretKey: string;
     webhookSecret: string;
+    webhookSecretOrders: string;
     currency: string;
   };
   throttle: {
@@ -82,6 +83,10 @@ export default (): AppConfig => ({
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY ?? '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? '',
+    // Secreto adicional para el webhook de compras de productos (orders), que en
+    // Stripe es un endpoint aparte con su propio signing secret. Opcional: si no
+    // se define, se usa el mismo STRIPE_WEBHOOK_SECRET para ambos.
+    webhookSecretOrders: process.env.STRIPE_WEBHOOK_SECRET_ORDERS ?? '',
     // Moneda ISO para los cobros (crc = colón costarricense, usd, etc.).
     currency: process.env.STRIPE_CURRENCY ?? 'usd',
   },
