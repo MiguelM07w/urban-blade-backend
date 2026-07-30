@@ -106,6 +106,9 @@ export class AuthService {
         avatar: payload.picture,
         authProvider: AuthProvider.GOOGLE,
       });
+    } else if (!user.isActive) {
+      // Un usuario eliminado (soft delete) no puede volver a entrar por Google.
+      throw new UnauthorizedException('La cuenta está desactivada');
     }
     this.assertNotBlocked(user);
     return this.buildAuthResult(user);
@@ -124,6 +127,10 @@ export class AuthService {
     const user = await this.usersService.findByIdWithRefreshToken(payload.sub);
     if (!user || !user.hashedRefreshToken) {
       throw new UnauthorizedException('Sesión no válida');
+    }
+    if (!user.isActive) {
+      // Un usuario eliminado (soft delete) no puede renovar su sesión.
+      throw new UnauthorizedException('La cuenta está desactivada');
     }
     const matches = await bcrypt.compare(refreshToken, user.hashedRefreshToken);
     if (!matches) {

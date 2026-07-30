@@ -66,6 +66,25 @@ interface AuthResult {
 - **Refresh automático:** ante un 401, llamar `POST /auth/refresh` con `{ refreshToken }`, guardar los nuevos tokens y reintentar la request original una sola vez. Si el refresh falla, cerrar sesión.
 - Guardar tokens en `expo-secure-store`, nunca en AsyncStorage plano.
 
+> **Cuenta desactivada (soft delete) — comportamiento a manejar:** cuando el admin
+> elimina un usuario, este queda **desactivado** (`isActive: false`), no borrado. El
+> backend ahora **bloquea el acceso** de una cuenta desactivada en:
+> - `POST /auth/login` y `POST /auth/google` → `401 "La cuenta está desactivada"`.
+> - `POST /auth/refresh` → `401 "La cuenta está desactivada"` (al intentar renovar).
+>
+> Qué debe hacer el front:
+> - **En login:** muestra el `message` del backend tal cual ("La cuenta está
+>   desactivada") — así el usuario borrado sabe por qué no entra. (Ya cubierto si
+>   muestras el `message` de los errores, como en el resto de la app.)
+> - **En el interceptor:** si el **refresh** devuelve `401`, **cierra sesión** (borra
+>   tokens de `secure-store`) y **redirige al login**. Es el mismo manejo de
+>   "refresh fallido" ya descrito arriba — no lo trates distinto ni entres en bucle
+>   de reintentos. Con eso, un usuario que sea eliminado mientras tiene la app
+>   abierta será expulsado al login en cuanto su access token expire (≤15 min).
+>
+> Si tu interceptor ya hace *logout al fallar el refresh*, **no necesitas cambios**;
+> esto solo documenta el nuevo motivo por el que el refresh puede fallar.
+
 ### Roles
 
 ```ts
