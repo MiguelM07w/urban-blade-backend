@@ -19,6 +19,7 @@ import { ContactModule } from './modules/contact/contact.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
 import { GalleryModule } from './modules/gallery/gallery.module';
 import { HealthModule } from './modules/health/health.module';
+import { LandingModule } from './modules/landing/landing.module';
 import { MailModule } from './modules/mail/mail.module';
 import { BarbersModule } from './modules/barbers/barbers.module';
 import { BarbershopConfigModule } from './modules/barbershop-config/barbershop-config.module';
@@ -90,6 +91,7 @@ import { WaitingListModule } from './modules/waiting-list/waiting-list.module';
     GalleryModule,
     QueueModule,
     HealthModule,
+    LandingModule,
   ],
   providers: [
     // Autenticación JWT global (las rutas @Public() se saltan el guard)
