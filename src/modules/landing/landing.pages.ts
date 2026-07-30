@@ -1,7 +1,9 @@
 /**
  * Plantillas HTML de las páginas públicas de la API (negro y dorado, la paleta
- * de Urban Blade). Autocontenidas (CSS inline), sin dependencias externas.
+ * de Urban Blade). Autocontenidas (CSS inline + logo como data URI), sin
+ * dependencias externas ni archivos estáticos.
  */
+import { LOGO_DATA_URI } from './logo.asset';
 
 const GOLD = '#C9A24B';
 const GOLD_SOFT = '#E7D3A1';
@@ -32,6 +34,7 @@ function shell(title: string, body: string): string {
     font-size: 13px; letter-spacing: 4px; text-transform: uppercase;
     color: ${GOLD}; font-weight: 700; margin-bottom: 8px;
   }
+  .logo-img { width: 280px; max-width: 82%; height: auto; margin: 0 auto 4px; display: block; }
   h1 {
     font-size: 30px; font-weight: 800; margin-bottom: 6px;
     background: linear-gradient(90deg, ${GOLD} 0%, ${GOLD_SOFT} 50%, ${GOLD} 100%);
@@ -76,9 +79,8 @@ export function landingPage(): string {
   return shell(
     'Urban Blade API',
     `
-    <div class="logo">Urban Blade</div>
-    <h1>API</h1>
-    <p class="sub">Backend de la barbería — NestJS + MongoDB</p>
+    <img class="logo-img" src="${LOGO_DATA_URI}" alt="Urban Blade" />
+    <p class="sub">API · Backend de la barbería — NestJS + MongoDB</p>
     <div class="rule"></div>
     <div class="links">
       <a class="btn primary" href="/api/docs">Documentación (Swagger)</a>
@@ -110,8 +112,8 @@ export function statusPage(dbUp: boolean): string {
   return shell(
     'Estado — Urban Blade API',
     `
-    <div class="logo">Urban Blade</div>
-    <h1>Estado del servicio</h1>
+    <img class="logo-img" src="${LOGO_DATA_URI}" alt="Urban Blade" style="width:220px" />
+    <h1 style="font-size:22px">Estado del servicio</h1>
     ${badge}
     <div class="rule"></div>
     ${apiRow}
